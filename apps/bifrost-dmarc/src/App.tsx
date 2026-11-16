@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Navigate, Route, Routes, useNavigate, useLocation } from "react-router-dom";
 import { tables, useWorkflowMutation, useWorkflowQuery } from "bifrost";
 
 import { AppShell } from "./components/AppShell";
@@ -10,18 +10,18 @@ import { OverviewPage } from "./components/OverviewPage";
 import { ReportsPage } from "./components/ReportsPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { BfButton } from "./components/bifrost/BfButton";
+import type { BfDataTableSort } from "./components/bifrost/BfDataTable";
+import { useTablePage } from "./hooks/useTablePage";
 import { useCompleteTable } from "./hooks/useCompleteTable";
 import { useWorkflowDispatch } from "./hooks/useWorkflowDispatch";
 import { buildLiveDashboardData, liveStartDate, normalizeDomainSummary } from "./lib/liveDashboard";
 import type { BulkMigrationOperation } from "./lib/migration";
 import type {
-  AggregateReport,
   AppContext,
   DailyMetric,
   DnsChange,
   DnsComparison,
   DomainSummary,
-  FailureRecord,
   IngestStatus,
   Investigation,
   MigrationRun,
@@ -54,19 +54,22 @@ interface BulkLifecycleResult {
 
 export default function App() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const isOverview = location.pathname === "/";
+  const isSettings = location.pathname === "/settings";
+  const isMigration = location.pathname === "/migration";
+  const needsMetrics = isOverview || location.pathname === "/domains" || location.pathname === "/reports" || isMigration;
   const [organizationId, setOrganizationId] = useState("");
   const [days, setDays] = useState(30);
   const [overviewDomainId, setOverviewDomainId] = useState("");
   const [operationError, setOperationError] = useState("");
   const [emailUsageUpdating, setEmailUsageUpdating] = useState(false);
-  const tableStartDate = useMemo(() => liveStartDate(90), []);
+  const metricDays = isOverview ? days : 30;
+  const metricOrganization = isOverview ? organizationId : "";
+  const tableStartDate = liveStartDate(metricDays);
   const analyticsWhere = useMemo<Record<string, unknown>>(
-    () => ({ date: { gte: tableStartDate } }),
-    [tableStartDate],
-  );
-  const reportWhere = useMemo<Record<string, unknown>>(
-    () => ({ date_end: { gte: tableStartDate } }),
-    [tableStartDate],
+    () => ({ date: { gte: tableStartDate }, ...(metricOrganization ? { organization_id: metricOrganization } : {}) }),
+    [tableStartDate, metricOrganization],
   );
 
   // Only configuration and the Bifrost organization directory come from a
@@ -81,49 +84,62 @@ export default function App() {
     pageSize: 1000,
     order_by: "domain",
     order_dir: "asc",
+    enabled: isMigration,
   });
   const dailyMetrics = useCompleteTable<DailyMetric>("dmarc_daily_metrics", {
     where: analyticsWhere,
+    enabled: needsMetrics,
     pageSize: 1000,
     order_by: "date",
     order_dir: "asc",
   });
-  const reports = useCompleteTable<AggregateReport>("dmarc_reports", {
-    where: reportWhere,
-    pageSize: 1000,
-    order_by: "date_end",
-    order_dir: "desc",
-  });
-  const records = useCompleteTable<FailureRecord>("dmarc_records", {
-    where: analyticsWhere,
-    pageSize: 1000,
-    order_by: "date",
-    order_dir: "desc",
-  });
-  const ingestEvents = useCompleteTable<IngestStatus>("dmarc_ingest_events", {
-    pageSize: 1000,
+  // The shell needs only the latest delivery, not the entire inbound history.
+  const ingestEvents = useTablePage<IngestStatus>("dmarc_ingest_events", {
+    where: { completed_at: { is_null: false } },
+    pageSize: 1,
+    skipCount: true,
     order_by: "completed_at",
     order_dir: "desc",
   });
-  const investigations = useCompleteTable<Investigation>("dmarc_investigations", {
-    pageSize: 1000,
+  const investigations = useTablePage<Investigation>("dmarc_investigations", {
+    pageSize: 25,
+    skipCount: true,
     order_by: "created_at",
     order_dir: "desc",
+    enabled: isSettings,
   });
-  const dnsChanges = useCompleteTable<DnsChange>("dmarc_dns_changes", {
-    pageSize: 1000,
+  const [dnsHistoryPage, setDnsHistoryPage] = useState(1);
+  const [dnsSort, setDnsSort] = useState<BfDataTableSort>({ columnId: "date", direction: "descending" });
+  const dnsSortFields: Record<string, string> = { organization: "organization_name", domain: "domain", record: "kind", action: "action", status: "status", date: "created_at" };
+  const dnsChanges = useTablePage<DnsChange>("dmarc_dns_changes", {
+    page: dnsHistoryPage,
+    pageSize: 25,
+    order_by: dnsSortFields[dnsSort.columnId] ?? "created_at",
+    order_dir: dnsSort.direction === "ascending" ? "asc" : "desc",
+    enabled: isSettings,
+  });
+  useEffect(() => {
+    if (isSettings && !dnsChanges.loading && !dnsChanges.error) {
+      const lastPage = Math.max(1, Math.ceil(dnsChanges.total / 25));
+      if (dnsHistoryPage > lastPage) setDnsHistoryPage(lastPage);
+    }
+  }, [isSettings, dnsChanges.loading, dnsChanges.error, dnsChanges.total, dnsHistoryPage]);
+  // Migration only displays its latest run. Read its tasks by run_id, rather
+  // than downloading every historical task each time the app opens.
+  const migrationRuns = useTablePage<MigrationRun>("dmarc_migration_runs", {
+    pageSize: 1,
+    skipCount: true,
     order_by: "created_at",
     order_dir: "desc",
+    enabled: isMigration,
   });
-  const migrationRuns = useCompleteTable<MigrationRun>("dmarc_migration_runs", {
-    pageSize: 100,
-    order_by: "created_at",
-    order_dir: "desc",
-  });
+  const latestRunId = migrationRuns.rows[0]?.id;
   const migrationTasks = useCompleteTable<MigrationTask>("dmarc_migration_tasks", {
+    where: { run_id: latestRunId ?? "" },
     pageSize: 1000,
-    order_by: "created_at",
-    order_dir: "desc",
+    order_by: "ordering",
+    order_dir: "asc",
+    enabled: isMigration && Boolean(latestRunId),
   });
   const normalizedDomains = useMemo(
     () => domainInventory.rows.map(normalizeDomainSummary),
@@ -134,8 +150,8 @@ export default function App() {
     context: context.data,
     domains: normalizedDomains,
     dailyMetrics: dailyMetrics.rows,
-    reports: reports.rows,
-    records: records.rows,
+    reports: [],
+    records: [],
     ingestEvents: ingestEvents.rows,
     investigations: investigations.rows,
     dnsChanges: dnsChanges.rows,
@@ -148,16 +164,14 @@ export default function App() {
     ingestEvents.rows,
     investigations.rows,
     normalizedDomains,
-    records.rows,
-    reports.rows,
   ]);
 
   const overviewData = useMemo(() => buildLiveDashboardData({
     context: context.data,
     domains: normalizedDomains,
     dailyMetrics: dailyMetrics.rows,
-    reports: reports.rows,
-    records: records.rows,
+    reports: [],
+    records: [],
     ingestEvents: ingestEvents.rows,
     investigations: investigations.rows,
     dnsChanges: dnsChanges.rows,
@@ -172,8 +186,6 @@ export default function App() {
     investigations.rows,
     normalizedDomains,
     organizationId,
-    records.rows,
-    reports.rows,
   ]);
 
   const sync = useWorkflowMutation<{ zones: number; mapped: number; unmapped: number }>(SYNC_WORKFLOW);
@@ -269,16 +281,15 @@ export default function App() {
     domainInventory.error,
     sourceInventory.error,
     dailyMetrics.error,
-    reports.error,
-    records.error,
     ingestEvents.error,
     investigations.error,
     dnsChanges.error,
+    migrationRuns.error,
+    migrationTasks.error,
   ].filter((error): error is Error => Boolean(error));
   const loadError = context.error ?? tableErrors[0];
-  const overviewLoading = context.loading || domainInventory.loading || dailyMetrics.loading || reports.loading;
+  const overviewLoading = context.loading || domainInventory.loading || dailyMetrics.loading;
   const domainsLoading = domainInventory.loading;
-  const reportsLoading = domainInventory.loading || reports.loading || records.loading || ingestEvents.loading;
   const mutationError = operationError
     || map.error?.message
     || mapAccount.error?.message
@@ -289,7 +300,7 @@ export default function App() {
     || refreshPublicDns.error?.message;
   const domainPageProps = {
     data,
-    loading: domainsLoading,
+    loading: domainsLoading || dailyMetrics.loading,
     syncing: sync.loading || refreshPublicDns.loading,
     mapping: map.loading || mapAccount.loading,
     onSync: syncDomains,
@@ -324,9 +335,9 @@ export default function App() {
           <Route path="/" element={<><OverviewPage data={overviewData} loading={overviewLoading} organizationId={organizationId} days={days} onOrganizationChange={setOrganizationId} onDaysChange={setDays} onOpenDomain={setOverviewDomainId} /><DomainsPage {...domainPageProps} managerOnly requestedDomainId={overviewDomainId} onManagerClose={() => setOverviewDomainId("")} /></>} />
           <Route path="/organizations" element={<OrganizationsPage data={data} loading={context.loading || domainInventory.loading} onSelect={openOrganizationDomains} />} />
           <Route path="/domains" element={<DomainsPage {...domainPageProps} />} />
-          <Route path="/reports" element={<ReportsPage data={data} loading={reportsLoading} />} />
+          <Route path="/reports" element={<ReportsPage data={data} loading={context.loading || domainInventory.loading} coverageLoading={dailyMetrics.loading} />} />
           <Route path="/migration" element={<MigrationPage domains={data.domains} sources={sourceInventory.rows} organizations={data.organizations} runs={migrationRuns.rows} tasks={migrationTasks.rows} loading={domainInventory.loading || sourceInventory.loading || migrationRuns.loading || migrationTasks.loading} syncing={sync.loading || refreshPublicDns.loading} mapping={map.loading} applying={applyDns.loading} starting={processDmarcMigration.loading} error={domainInventory.error?.message || sourceInventory.error?.message || migrationRuns.error?.message || migrationTasks.error?.message || sync.error?.message || refreshPublicDns.error?.message || applyDns.error?.message || processDmarcMigration.error?.message} onSync={syncDomains} onMap={mapDomain} onStartMigration={startMigration} onCompareDns={compareDnsRecord} onApplyDns={(domainId, kind, expectedRecord, settings) => applyDnsRecord(domainId, kind, data.domains.find((item) => item.id === domainId)?.domain ?? "", expectedRecord, settings)} />} />
-          <Route path="/settings" element={<SettingsPage loading={context.loading} setup={data.setup} uploading={synthetic.loading} uploadResult={synthetic.data} uploadError={synthetic.error?.message} onUpload={uploadSynthetic} investigations={investigations.rows} investigationsLoading={investigations.loading} investigationLoading={createInvestigation.loading} emlLoading={analyzeEml.loading} investigationError={createInvestigation.error?.message || analyzeEml.error?.message || investigations.error?.message} onCreateInvestigation={issueInvestigation} onUploadEml={uploadEml} dnsChanges={dnsChanges.rows} secretImporting={configureResendSecret.loading} secretImportError={configureResendSecret.error?.message} onImportResendSecret={importResendSecret} />} />
+          <Route path="/settings" element={<SettingsPage loading={context.loading} setup={data.setup} uploading={synthetic.loading} uploadResult={synthetic.data} uploadError={synthetic.error?.message} onUpload={uploadSynthetic} investigations={investigations.rows} investigationsLoading={investigations.loading} onRetryInvestigations={() => void investigations.refresh()} investigationLoading={createInvestigation.loading} emlLoading={analyzeEml.loading} investigationError={createInvestigation.error?.message || analyzeEml.error?.message || investigations.error?.message} onCreateInvestigation={issueInvestigation} onUploadEml={uploadEml} dnsChanges={dnsChanges.rows} dnsSort={dnsSort} onDnsSortChange={(sort) => { setDnsSort(sort); setDnsHistoryPage(1); }} dnsChangesLoading={dnsChanges.loading} dnsChangesError={dnsChanges.error?.message} onRetryDnsChanges={() => void dnsChanges.refresh()} dnsPagination={{ page: dnsHistoryPage, pageSize: 25, total: dnsChanges.total, onPageChange: setDnsHistoryPage }} secretImporting={configureResendSecret.loading} secretImportError={configureResendSecret.error?.message} onImportResendSecret={importResendSecret} />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AppShell>

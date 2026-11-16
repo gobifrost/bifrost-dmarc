@@ -30,6 +30,18 @@ declare module "bifrost" {
   }
   export function useBifrostContext(): BifrostContextValue;
   export const tables: {
+    query: (table: string, query?: {
+      where?: Record<string, unknown>;
+      limit?: number;
+      offset?: number;
+      order_by?: string;
+      order_dir?: "asc" | "desc";
+      skip_count?: boolean;
+    }) => Promise<{ table_id: string; documents: Array<{ id: string; data: Record<string, unknown> }>; total: number }>;
+    get: (table: string, id: string) => Promise<{ id: string; data: Record<string, unknown> } | null>;
+    subscribe: (tableId: string, filter: null, onEvent: (event: {
+      type: string; message?: string;
+    }) => void, onReconnect?: () => void) => () => void;
     update: <TData = Record<string, unknown>>(
       table: string,
       id: string,

@@ -1,49 +1,25 @@
 import { renderHook, waitFor } from "@testing-library/react";
-import { StrictMode, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-
-import { useInfiniteTable } from "bifrost";
+import { tables } from "bifrost";
 import { useCompleteTable } from "./useCompleteTable";
 
-vi.mock("bifrost", () => ({ useInfiniteTable: vi.fn() }));
+vi.mock("bifrost", () => ({ tables: { query: vi.fn(), subscribe: vi.fn(() => vi.fn()) } }));
 
-const mockedUseInfiniteTable = vi.mocked(useInfiniteTable);
+beforeEach(() => vi.clearAllMocks());
 
 describe("useCompleteTable", () => {
-  beforeEach(() => vi.clearAllMocks());
-
-  it("does not request the same next page twice during Strict Mode effects", async () => {
-    let finishLoading!: () => void;
-    const loadMore = vi.fn(() => new Promise<void>((resolve) => { finishLoading = resolve; }));
-    mockedUseInfiniteTable.mockReturnValue({
-      rows: [],
-      total: 2,
-      loading: false,
-      error: null,
-      hasMore: true,
-      loadMore,
-    } as ReturnType<typeof useInfiniteTable>);
-
-    renderHook(() => useCompleteTable("reports"), {
-      wrapper: ({ children }: { children: ReactNode }) => <StrictMode>{children}</StrictMode>,
-    });
-
-    await waitFor(() => expect(loadMore).toHaveBeenCalledTimes(1));
-    finishLoading();
+  it("loads every daily summary page while counting only once", async () => {
+    vi.mocked(tables.query)
+      .mockResolvedValueOnce({ table_id: "daily", total: 3, documents: [{ id: "a", data: { total: 10 } }, { id: "b", data: { total: 20 } }] })
+      .mockResolvedValueOnce({ table_id: "daily", total: -1, documents: [{ id: "c", data: { total: 30 } }] });
+    const { result } = renderHook(() => useCompleteTable("daily", { pageSize: 2 }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.rows).toHaveLength(3);
+    expect(tables.query).toHaveBeenNthCalledWith(2, "daily", expect.objectContaining({ offset: 2, limit: 2, skip_count: true }));
   });
-
-  it("exposes each table document once when a subscription repeats a page", () => {
-    mockedUseInfiniteTable.mockReturnValue({
-      rows: [{ id: "report-1", domain: "example.com" }, { id: "report-1", domain: "example.com" }],
-      total: 1,
-      loading: false,
-      error: null,
-      hasMore: false,
-      loadMore: vi.fn(),
-    } as ReturnType<typeof useInfiniteTable>);
-
-    const { result } = renderHook(() => useCompleteTable<{ id: string; domain: string }>("reports"));
-
-    expect(result.current.rows).toEqual([{ id: "report-1", domain: "example.com" }]);
+  it("does not read inventories belonging to another route", () => {
+    renderHook(() => useCompleteTable("sources", { enabled: false }));
+    expect(tables.query).not.toHaveBeenCalled();
+    expect(tables.subscribe).not.toHaveBeenCalled();
   });
 });

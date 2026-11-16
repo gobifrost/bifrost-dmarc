@@ -130,6 +130,7 @@ export interface DailyMetric extends TrendPoint {
   spf_pass?: number;
   sources?: Record<string, number>;
   updated_at?: string;
+  last_report_at?: string;
 }
 
 export interface AggregateReport {

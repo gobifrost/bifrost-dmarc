@@ -76,6 +76,8 @@ export interface BfDataTableProps<Row> {
   sort?: BfDataTableSort;
   defaultSort?: BfDataTableSort;
   onSortChange?: (sort: BfDataTableSort) => void;
+  /** Preserve server order while retaining sortable column controls. */
+  manualSorting?: boolean;
   selection?: "none" | "single" | "multiple";
   selectedRowIds?: string[];
   onSelectionChange?: (ids: string[]) => void;
@@ -123,6 +125,7 @@ export function BfDataTable<Row>({
   sort: controlledSort,
   defaultSort,
   onSortChange,
+  manualSorting = false,
   selection = "none",
   selectedRowIds = [],
   onSelectionChange,
@@ -142,7 +145,7 @@ export function BfDataTable<Row>({
   const sort = controlledSort ?? internalSort;
   const selectedSet = useMemo(() => new Set(selectedRowIds), [selectedRowIds]);
   const sortedRows = useMemo(() => {
-    if (!sort) return rows;
+    if (!sort || manualSorting) return rows;
     const column = columns.find((item) => item.id === sort.columnId);
     if (!column) return rows;
     return [...rows].sort((left, right) => {
@@ -151,7 +154,7 @@ export function BfDataTable<Row>({
       const result = leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
       return sort.direction === "ascending" ? result : -result;
     });
-  }, [columns, rows, sort]);
+  }, [columns, rows, sort, manualSorting]);
   const clientTotalPages = clientPageSize ? Math.max(1, Math.ceil(sortedRows.length / clientPageSize)) : 1;
   useEffect(() => {
     setClientPage((current) => Math.min(current, clientTotalPages));

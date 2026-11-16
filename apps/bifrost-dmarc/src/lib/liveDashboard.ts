@@ -207,9 +207,18 @@ export function buildLiveDashboardData({
   }
 
   const lastReportByDomain = new Map<string, string>();
+  // Daily rows prove that a report was received for this reporting period.
+  // Overview and domain posture must not depend on downloading raw reports.
+  for (const row of visibleMetrics) {
+    const reportAt = row.last_report_at || row.date;
+    if (reportAt > (lastReportByDomain.get(row.domain) ?? "")) {
+      lastReportByDomain.set(row.domain, reportAt);
+    }
+  }
   for (const report of visibleReports) {
-    if (!lastReportByDomain.has(report.domain)) {
-      lastReportByDomain.set(report.domain, report.date_end || report.ingested_at || "");
+    const reportAt = report.date_end || report.ingested_at || "";
+    if (reportAt > (lastReportByDomain.get(report.domain) ?? "")) {
+      lastReportByDomain.set(report.domain, reportAt);
     }
   }
   const reportingDomain = stringValue(context?.setup?.reporting_domain).toLowerCase();

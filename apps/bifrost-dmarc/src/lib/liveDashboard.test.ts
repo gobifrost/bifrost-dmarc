@@ -157,6 +157,15 @@ describe("buildLiveDashboardData", () => {
     expect(data.attention.map((item) => item.domain)).toEqual(["unmapped.example"]);
   });
 
+  it("derives reporting recency from daily summaries without raw reports", () => {
+    const data = build({ dailyMetrics: [metric({ last_report_at: "2026-08-23T09:00:00.000Z" })] });
+    expect(data.reports).toEqual([]);
+    expect(data.records).toEqual([]);
+    expect(data.summary.reporting).toBe(1);
+    expect(data.domains[0]).toMatchObject({ reporting_status: "current", last_report_at: "2026-08-23T09:00:00.000Z" });
+    expect(build().domains[0]).toMatchObject({ reporting_status: "current", last_report_at: "2026-08-23" });
+  });
+
   it("reflects live report, issue, inbound, investigation, and DNS audit rows without a dashboard refresh", () => {
     const data = build({
       reports: [{ id: "report-1", reporter: "google.com", domain: "one.example", organization_name: "Organization One", date_end: "2026-08-23T09:00:00.000Z", message_count: 10, record_count: 1 }],
